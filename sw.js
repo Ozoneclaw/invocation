@@ -1,7 +1,7 @@
 /* Service worker : met tout en cache à la première visite, puis sert hors-ligne.
-   IMPORTANT : si tu modifies un fichier ou une image, change CACHE ('invoc-v3', 'invoc-v3'...)
+   IMPORTANT : si tu modifies un fichier ou une image, change CACHE ('invoc-v5', 'invoc-v3'...)
    sinon l'iPad continuera d'afficher l'ancienne version. */
-const CACHE = 'invoc-v3';
+const CACHE = 'invoc-v5';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(

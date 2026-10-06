@@ -29,12 +29,20 @@ html, body { margin:0; height:100%; background:#000; color:#e9dfff;
     border:.5vmin dashed #4b3875; border-radius:3vmin; pointer-events:none; }
 #ph.on { display:flex; }
 
-/* Bouton REJOUER : superpose a la video finale (a repositionner selon vos visuels) */
-#replay { position:absolute; z-index:10; left:50%; bottom:5vmin; transform:translateX(-50%);
-    display:none; font:inherit; font-size:4vmin; letter-spacing:.2em; padding:2vmin 7vmin;
-    border-radius:10vmin; color:#e9dfff; background:#3a1f66; border:.4vmin solid #8f78bd; }
+/* Bouton REJOUER : style craie / rune, noir, lueur rouge (coherent avec le cercle d'invocation).
+   Police : depose un fichier assets/fonts/invocation.woff2 pour utiliser la tienne, sinon police monospace. */
+@font-face { font-family:'Invocation'; src:url('assets/fonts/invocation.woff2') format('woff2'); font-display:swap; }
+#replay { position:absolute; z-index:10; left:50%; bottom:4vmin; transform:translateX(-50%);
+    display:none; cursor:pointer;
+    font-family:'Invocation', ui-monospace, 'SF Mono', Menlo, 'Courier New', monospace;
+    font-size:3.4vmin; font-weight:700; letter-spacing:.3em; text-transform:uppercase; padding:1.8vmin 6vmin;
+    color:#f2f2f2; background:rgba(0,0,0,.82);
+    border:.45vmin solid #e8e8e8; border-radius:255px 18px 225px 18px / 18px 225px 18px 255px;
+    text-shadow:0 0 1.2vmin #d11;
+    box-shadow:0 0 2.5vmin rgba(200,0,0,.45), inset 0 0 1.5vmin rgba(255,255,255,.12); }
 #replay.on { display:block; }
-#replay:disabled { opacity:.35; }
+#replay:disabled { opacity:.45; border-color:#8a8a8a; box-shadow:none; text-shadow:none; }
+#replay:active:not(:disabled) { background:#7d0d0d; border-color:#ff9a1a; color:#fff; }
 
 /* ============ ADMIN CACHE ============ */
 #hotspot { position:fixed; top:0; right:0; width:110px; height:110px; z-index:50; }
@@ -76,6 +84,7 @@ const CONFIG = {
   REPLAY_LOCK_MS: 2000,                       // anti-misclick du bouton REJOUER
   IDLE_RESET_MS: 30000,                       // retour a l'attente si abandon en cours de route
   PLACEHOLDER_STEP_MS: 1500,                  // duree d'un step "fantome" quand la video manque
+  PRELOAD_IN_MEMORY: true,                    // charge chaque video en mémoire avant lecture (évite les saccades)
   SOUND: false,                               // true = joue le son des steps (a tester sur l'iPad)
   FORCE_RARITY: 'common'                      // TEST : force une rareté. Mettre null pour le vrai tirage
 };
@@ -140,11 +149,26 @@ function makeVideo(loop, forceMuted) {
   stage.appendChild(v);
   return v;
 }
-function killVideo(v) { v._dead = true; try { v.pause(); } catch (e) {} v.removeAttribute('src'); v.load(); v.remove(); }
+function killVideo(v) {
+  v._dead = true; try { v.pause(); } catch (e) {}
+  v.removeAttribute('src'); v.load(); v.remove();
+  if (v._blobUrl) { URL.revokeObjectURL(v._blobUrl); v._blobUrl = null; }
+}
+
+/* Charge le fichier entier en mémoire puis le donne à la balise video : lecture immédiate, sans réseau.
+   En cas d'échec, repli sur l'adresse directe (le diagnostic d'erreur s'affichera alors). */
+function loadSrc(v, url) {
+  v._origUrl = url;
+  if (!CONFIG.PRELOAD_IN_MEMORY) { v.src = url; return Promise.resolve(); }
+  return fetch(url)
+    .then(r => { if (!r.ok) throw new Error('http'); return r.blob(); })
+    .then(b => { if (v._dead) return; v._blobUrl = URL.createObjectURL(new Blob([b], { type: 'video/mp4' })); v.src = v._blobUrl; })
+    .catch(() => { if (!v._dead) v.src = url; });
+}
 
 /* Joue une video. L'ancienne reste affichée jusqu'à ce que la nouvelle tourne (pas de flash noir).
    done = appelé à la fin (videos sans loop). Si le fichier manque : placeholder temporisé. */
-function playClip(v, label, done) {
+function playClip(v, label, done, valid) {
   let finished = false;
   const fail = () => {
     if (finished || v._dead) return; finished = true;
@@ -153,23 +177,35 @@ function playClip(v, label, done) {
     ph.textContent = 'VIDEO NON LUE\n' + label + '\n' + url;
     ph.classList.add('on');
     // Diagnostic : le fichier existe-t-il à cette adresse ?
-    fetch(url, { method: 'HEAD' }).then(r => {
+    fetch(CONFIG.CLIP_DIR && v._origUrl ? v._origUrl : url, { method: 'HEAD' }).then(r => {
       ph.textContent += r.ok
         ? '\n\nFichier présent (HTTP ' + r.status + ') : codec non supporté ou chargement trop long'
         : '\n\nFichier INTROUVABLE (HTTP ' + r.status + ') : nom, majuscules ou dossier ?';
     }).catch(() => { ph.textContent += '\n\nTest impossible (ouvre l\'app en http, pas en fichier local)'; });
     if (done) setTimeout(done, CONFIG.PLACEHOLDER_STEP_MS);
   };
-  if (v.error) return fail();
-  v.addEventListener('playing', () => {
-    ph.classList.remove('on'); v.classList.add('show');
-    if (current && current !== v) current.classList.remove('show');
-    current = v;
-  }, { once: true });
-  v.addEventListener('error', () => fail(), { once: true });
-  if (done) v.addEventListener('ended', () => { if (!finished) { finished = true; done(); } }, { once: true });
-  try { v.currentTime = 0; } catch (e) {}
-  const p = v.play(); if (p && p.catch) p.catch(() => {});
+  const start = () => {
+    if (v._dead || finished) return;
+    if (v.error) return fail();
+    // Affiche cette video et masque la precedente. Declenché par l'évènement 'playing' OU par la
+    // résolution de play() : sur iPad, 'playing' ne se déclenche pas toujours sur une video déjà lancée.
+    let revealed = false;
+    const reveal = () => {
+      if (revealed || v._dead) return; revealed = true;
+      // valid() faux = un autre step a déjà démarré entre-temps : on n'affiche pas cette video
+      if (valid && !valid()) { finished = true; v.pause(); return; }
+      ph.classList.remove('on'); v.classList.add('show');
+      const prev = current;
+      if (prev && prev !== v) { prev.classList.remove('show'); try { prev.pause(); } catch (e) {} }
+      current = v;
+    };
+    v.addEventListener('playing', reveal, { once: true });
+    v.addEventListener('error', () => fail(), { once: true });
+    if (done) v.addEventListener('ended', () => { if (!finished) { finished = true; done(); } }, { once: true });
+    try { v.pause(); v.currentTime = 0; } catch (e) {}   // pause d'abord : garantit un vrai redémarrage
+    const p = v.play(); if (p && p.then) p.then(reveal, () => {});
+  };
+  (v._ready || Promise.resolve()).then(start);
   setTimeout(() => { if (!v.classList.contains('show') && !finished) fail(); }, 12000);  // chargement trop long
 }
 
@@ -185,7 +221,7 @@ const clipFile = (n, loop) => plan[n - 1] + '_STEP_' + n + (loop ? '_LOOP' : '')
 // Cree (une seule fois) la video du step n, ou de sa boucle
 function clip(n, loop) {
   const k = n + (loop ? 'L' : '');
-  if (!clips[k]) { const v = makeVideo(loop); v.src = CONFIG.CLIP_DIR + clipFile(n, loop); clips[k] = v; }
+  if (!clips[k]) { const v = makeVideo(loop); v._ready = loadSrc(v, CONFIG.CLIP_DIR + clipFile(n, loop)); clips[k] = v; }
   return clips[k];
 }
 // Libère les videos des steps <= n (économise la mémoire de l'iPad)
@@ -194,7 +230,7 @@ function dispose(n) {
 }
 
 const waitVid = makeVideo(true, true);   // toujours muet (autoplay avant le 1er toucher)
-waitVid.src = CONFIG.WAITING_VIDEO;
+waitVid._ready = loadSrc(waitVid, CONFIG.WAITING_VIDEO);
 
 function resetIdle() {
   clearTimeout(idleTimer);
@@ -209,7 +245,7 @@ function resetGame() {
   replayBtn.classList.remove('on');
   pick = drawRarity(); plan = STEP_PLAN[pick.id];
   clip(1, false); clip(1, true);                       // préchargement du step 1
-  playClip(waitVid, 'ECRAN D\'ATTENTE\n' + CONFIG.WAITING_VIDEO + '\n\nTouche pour commencer');
+  playClip(waitVid, 'ECRAN D\'ATTENTE\n' + CONFIG.WAITING_VIDEO + '\n\nTouche pour commencer', null, () => phase === 'wait');
 }
 
 /* Touche : lance le step suivant */
@@ -229,7 +265,7 @@ function nextStep() {
 }
 
 function stepDone(n) {
-  playClip(clip(n, true), clipFile(n, true));          // la flamme/carte continue en boucle
+  playClip(clip(n, true), clipFile(n, true), null, () => lit === n);          // la flamme/carte continue en boucle
   setTimeout(() => dispose(n - 1), 600);               // libère les videos précédentes
   if (n >= CONFIG.TOTAL_STEPS) showResult();
   else { phase = 'hold'; resetIdle(); }
