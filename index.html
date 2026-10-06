@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="assets/icon.png">
+<title>Invocation</title>
+<style>
+/* ============ BASE ============ */
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+html, body { margin:0; height:100%; background:#000; color:#e9dfff;
+    font-family:Georgia, "Times New Roman", serif; overflow:hidden;
+    touch-action:manipulation; overscroll-behavior:none; }
+
+/* ============ SCENE UNIQUE : toutes les videos sont empilees plein ecran ============ */
+#stage { position:fixed; inset:0; background:#000; }
+#stage video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain;
+    opacity:0; pointer-events:none; background:#000; }
+#stage video.show { opacity:1; }
+
+/* Placeholder : s'affiche si un fichier video est introuvable (permet de tester sans assets) */
+#ph { position:absolute; inset:6vmin; z-index:5; display:none; align-items:center; justify-content:center;
+    text-align:center; font-size:3vmin; line-height:1.5; color:#8f78bd; white-space:pre-line;
+    border:.5vmin dashed #4b3875; border-radius:3vmin; pointer-events:none; }
+#ph.on { display:flex; }
+
+/* Bouton REJOUER : superpose a la video finale (a repositionner selon vos visuels) */
+#replay { position:absolute; z-index:10; left:50%; bottom:5vmin; transform:translateX(-50%);
+    display:none; font:inherit; font-size:4vmin; letter-spacing:.2em; padding:2vmin 7vmin;
+    border-radius:10vmin; color:#e9dfff; background:#3a1f66; border:.4vmin solid #8f78bd; }
+#replay.on { display:block; }
+#replay:disabled { opacity:.35; }
+
+/* ============ ADMIN CACHE ============ */
+#hotspot { position:fixed; top:0; right:0; width:110px; height:110px; z-index:50; }
+#admin { position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center;
+    background:rgba(5,3,10,.94); }
+#admin.open { display:flex; }
+#admin .box { width:min(520px, 92vw); font-family:system-ui, sans-serif; font-size:20px; }
+#admin table { width:100%; border-collapse:collapse; margin:16px 0; }
+#admin td, #admin th { padding:10px 8px; border-bottom:1px solid #3a2d58; text-align:right; }
+#admin td:first-child, #admin th:first-child { text-align:left; }
+#admin button { font:inherit; padding:12px 20px; margin-right:10px; border-radius:10px;
+    color:#e9dfff; background:#3a1f66; border:1px solid #8f78bd; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="ph"></div>
+  <button id="replay">REJOUER</button>
+</div>
+
+<!-- Admin : triple tap dans le coin haut droit -->
+<div id="hotspot"></div>
+<div id="admin"><div class="box">
+  <strong>Compteur de tirages</strong>
+  <table id="statsTable"></table>
+  <button id="adminClose">Fermer</button>
+  <button id="adminReset">Remise à zéro</button>
+</div></div>
+
+<script>
+/* =====================================================================
+   CONFIGURATION
+   ===================================================================== */
+const CONFIG = {
+  CLIP_DIR: 'assets/clips/',                  // dossier des videos de steps
+  WAITING_VIDEO: 'assets/clips/WAITING.mp4',  // ecran d'attente (boucle) : A ADAPTER au vrai nom de fichier
+  TOTAL_STEPS: 5,                             // nombre de clics / bougies
+  REPLAY_LOCK_MS: 2000,                       // anti-misclick du bouton REJOUER
+  IDLE_RESET_MS: 30000,                       // retour a l'attente si abandon en cours de route
+  PLACEHOLDER_STEP_MS: 1500,                  // duree d'un step "fantome" quand la video manque
+  SOUND: false,                               // true = joue le son des steps (a tester sur l'iPad)
+  FORCE_RARITY: 'common'                      // TEST : force une rareté. Mettre null pour le vrai tirage
+};
+
+/* Raretes : weight = pourcentage (somme = 100) */
+const RARITIES = [
+  { id:'common',    label:'COMMUN',           weight:63 },
+  { id:'rare',      label:'RARE',             weight:25 },
+  { id:'epic',      label:'ÉPIQUE',           weight:8  },
+  { id:'legendary', label:'LÉGENDAIRE',       weight:2  },
+  { id:'fail',      label:'INVOCATION RATÉE', weight:2  }
+];
+
+/* Prefixe de fichier utilise a chaque clic, selon la rareté tirée.
+   Fichiers lus : <PREFIXE>_STEP_<n>.mp4 puis <PREFIXE>_STEP_<n>_LOOP.mp4
+   Seul DEMON_MINEUR est confirmé. Les autres prefixes sont à confirmer. */
+const STEP_PLAN = {
+  common:    ['DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR'],
+  rare:      ['DEMON_MINEUR','DEMON_MAJEUR','DEMON_MAJEUR','DEMON_MAJEUR','DEMON_MAJEUR'],
+  epic:      ['DEMON_MINEUR','DEMON_MAJEUR','ARCHI_DEMON','ARCHI_DEMON','ARCHI_DEMON'],
+  legendary: ['DEMON_MINEUR','DEMON_MAJEUR','ARCHI_DEMON','DEMON_ANCIEN','DEMON_ANCIEN'],
+  fail:      ['DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','FLOP']
+};
+
+/* =====================================================================
+   OUTILS
+   ===================================================================== */
+const $ = id => document.getElementById(id);
+const stage = $('stage'), ph = $('ph'), replayBtn = $('replay');
+
+// Aléatoire uniforme [0,1)
+function rand() { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] / 4294967296; }
+
+// Tirage pondéré
+function drawRarity() {
+  if (CONFIG.FORCE_RARITY) return RARITIES.find(r => r.id === CONFIG.FORCE_RARITY) || RARITIES[0];
+  const total = RARITIES.reduce((s, r) => s + r.weight, 0);
+  let x = rand() * total, acc = 0;
+  for (const r of RARITIES) { acc += r.weight; if (x < acc) return r; }
+  return RARITIES[RARITIES.length - 1];
+}
+
+/* =====================================================================
+   STATISTIQUES (localStorage, repli en mémoire si indisponible)
+   ===================================================================== */
+const KEY = 'invocation_stats_v1';
+let stats = {};
+try { stats = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) {}
+RARITIES.forEach(r => { stats[r.id] = stats[r.id] || 0; });
+const saveStats = () => { try { localStorage.setItem(KEY, JSON.stringify(stats)); } catch (e) {} };
+
+/* =====================================================================
+   VIDEOS
+   ===================================================================== */
+let current = null;   // video actuellement affichée
+
+function makeVideo(loop, forceMuted) {
+  const v = document.createElement('video');
+  v.muted = forceMuted || !CONFIG.SOUND; v.loop = loop; v.playsInline = true; v.preload = 'auto';
+  v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', '');
+  v.disablePictureInPicture = true;
+  stage.appendChild(v);
+  return v;
+}
+function killVideo(v) { try { v.pause(); } catch (e) {} v.removeAttribute('src'); v.load(); v.remove(); }
+
+/* Joue une video. L'ancienne reste affichée jusqu'à ce que la nouvelle tourne (pas de flash noir).
+   done = appelé à la fin (videos sans loop). Si le fichier manque : placeholder temporisé. */
+function playClip(v, label, done) {
+  let finished = false;
+  const fail = () => {
+    if (finished) return; finished = true;
+    if (current) current.classList.remove('show');
+    ph.textContent = 'VIDEO MANQUANTE\n' + label; ph.classList.add('on');
+    if (done) setTimeout(done, CONFIG.PLACEHOLDER_STEP_MS);
+  };
+  if (v.error) return fail();
+  v.addEventListener('playing', () => {
+    ph.classList.remove('on'); v.classList.add('show');
+    if (current && current !== v) current.classList.remove('show');
+    current = v;
+  }, { once: true });
+  v.addEventListener('error', fail, { once: true });
+  if (done) v.addEventListener('ended', () => { if (!finished) { finished = true; done(); } }, { once: true });
+  try { v.currentTime = 0; } catch (e) {}
+  const p = v.play(); if (p && p.catch) p.catch(() => {});
+  setTimeout(() => { if (!v.classList.contains('show') && !finished) fail(); }, 4000);  // chargement trop long
+}
+
+/* =====================================================================
+   ETAT DU JEU
+   phase : 'wait' (ecran d'attente) > 'step' (clip en cours) > 'hold' (flamme en boucle, attend le clic)
+           > 'result' (carte affichée, bouton REJOUER)
+   ===================================================================== */
+let phase = 'wait', lit = 0, pick = null, plan = null, idleTimer = null;
+const clips = {};                // videos du tirage en cours, clés '1', '1L', '2'...
+const clipFile = (n, loop) => plan[n - 1] + '_STEP_' + n + (loop ? '_LOOP' : '') + '.mp4';
+
+// Cree (une seule fois) la video du step n, ou de sa boucle
+function clip(n, loop) {
+  const k = n + (loop ? 'L' : '');
+  if (!clips[k]) { const v = makeVideo(loop); v.src = CONFIG.CLIP_DIR + clipFile(n, loop); clips[k] = v; }
+  return clips[k];
+}
+// Libère les videos des steps <= n (économise la mémoire de l'iPad)
+function dispose(n) {
+  Object.keys(clips).forEach(k => { if (parseInt(k, 10) <= n) { killVideo(clips[k]); delete clips[k]; } });
+}
+
+const waitVid = makeVideo(true, true);   // toujours muet (autoplay avant le 1er toucher)
+waitVid.src = CONFIG.WAITING_VIDEO;
+
+function resetIdle() {
+  clearTimeout(idleTimer);
+  if (phase === 'hold') idleTimer = setTimeout(resetGame, CONFIG.IDLE_RESET_MS);
+}
+
+/* Retour à l'écran d'attente : la rareté est tirée ICI, avant le 1er clic, pour précharger les bonnes videos */
+function resetGame() {
+  clearTimeout(idleTimer);
+  dispose(99);
+  lit = 0; phase = 'wait';
+  replayBtn.classList.remove('on');
+  pick = drawRarity(); plan = STEP_PLAN[pick.id];
+  clip(1, false); clip(1, true);                       // préchargement du step 1
+  playClip(waitVid, 'ECRAN D\'ATTENTE\n' + CONFIG.WAITING_VIDEO + '\n\nTouche pour commencer');
+}
+
+/* Touche : lance le step suivant */
+stage.addEventListener('pointerdown', e => {
+  if (e.target === replayBtn) return;
+  if (phase !== 'wait' && phase !== 'hold') return;   // pendant un clip, on ignore les touches
+  nextStep();
+});
+
+function nextStep() {
+  clearTimeout(idleTimer);
+  lit++; phase = 'step';
+  const n = lit;
+  if (n < CONFIG.TOTAL_STEPS) { clip(n + 1, false); }  // précharge le step suivant
+  clip(n, true);                                       // et la boucle de celui-ci
+  playClip(clip(n, false), clipFile(n, false), () => stepDone(n));
+}
+
+function stepDone(n) {
+  playClip(clip(n, true), clipFile(n, true));          // la flamme/carte continue en boucle
+  setTimeout(() => dispose(n - 1), 600);               // libère les videos précédentes
+  if (n >= CONFIG.TOTAL_STEPS) showResult();
+  else { phase = 'hold'; resetIdle(); }
+}
+
+/* Derniere boucle affichée (= la carte) : compte le tirage et propose REJOUER */
+function showResult() {
+  phase = 'result';
+  stats[pick.id]++; saveStats();
+  replayBtn.classList.add('on'); replayBtn.disabled = true;
+  let left = Math.ceil(CONFIG.REPLAY_LOCK_MS / 1000);
+  replayBtn.textContent = 'REJOUER (' + left + ')';
+  const t = setInterval(() => {
+    left--;
+    if (left <= 0) { clearInterval(t); replayBtn.disabled = false; replayBtn.textContent = 'REJOUER'; }
+    else replayBtn.textContent = 'REJOUER (' + left + ')';
+  }, 1000);
+}
+replayBtn.addEventListener('click', () => { if (!replayBtn.disabled) resetGame(); });
+
+/* =====================================================================
+   ADMIN CACHE : triple tap dans le coin haut droit
+   ===================================================================== */
+let adminTaps = [];
+$('hotspot').addEventListener('pointerdown', () => {
+  const n = Date.now();
+  adminTaps = adminTaps.filter(t => n - t < 900); adminTaps.push(n);
+  if (adminTaps.length >= 3) { adminTaps = []; openAdmin(); }
+});
+function openAdmin() {
+  const total = RARITIES.reduce((s, r) => s + stats[r.id], 0);
+  let html = '<tr><th>Catégorie</th><th>Tirages</th><th>Réel</th><th>Cible</th></tr>';
+  RARITIES.forEach(r => {
+    const real = total ? (stats[r.id] / total * 100).toFixed(0) + ' %' : '-';
+    html += '<tr><td>' + r.label + '</td><td>' + stats[r.id] + '</td><td>' + real + '</td><td>' + r.weight + ' %</td></tr>';
+  });
+  html += '<tr><th>TOTAL</th><th>' + total + '</th><th></th><th></th></tr>';
+  if (CONFIG.FORCE_RARITY) html += '<tr><td colspan="4" style="color:#ffc02e">Mode test : rareté forcée (' + CONFIG.FORCE_RARITY + ')</td></tr>';
+  $('statsTable').innerHTML = html;
+  $('adminReset').textContent = 'Remise à zéro';
+  $('admin').classList.add('open');
+}
+$('adminClose').addEventListener('click', () => $('admin').classList.remove('open'));
+let resetArmed = false;   // remise à zéro : deux appuis
+$('adminReset').addEventListener('click', e => {
+  if (!resetArmed) {
+    resetArmed = true; e.target.textContent = 'Confirmer ?';
+    setTimeout(() => { resetArmed = false; e.target.textContent = 'Remise à zéro'; }, 3000);
+  } else {
+    RARITIES.forEach(r => stats[r.id] = 0); saveStats(); resetArmed = false; openAdmin();
+  }
+});
+
+/* =====================================================================
+   DEMARRAGE
+   ===================================================================== */
+// Précharge tout une fois (remplit aussi le cache hors-ligne du service worker)
+const warm = new Set([CONFIG.WAITING_VIDEO]);
+Object.values(STEP_PLAN).forEach(p => p.forEach((prefix, i) => {
+  warm.add(CONFIG.CLIP_DIR + prefix + '_STEP_' + (i + 1) + '.mp4');
+  warm.add(CONFIG.CLIP_DIR + prefix + '_STEP_' + (i + 1) + '_LOOP.mp4');
+}));
+warm.forEach(u => fetch(u).catch(() => {}));
+
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('contextmenu', e => e.preventDefault());
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+resetGame();
+</script>
+</body>
+</html>
