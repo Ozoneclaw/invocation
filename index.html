@@ -140,16 +140,24 @@ function makeVideo(loop, forceMuted) {
   stage.appendChild(v);
   return v;
 }
-function killVideo(v) { try { v.pause(); } catch (e) {} v.removeAttribute('src'); v.load(); v.remove(); }
+function killVideo(v) { v._dead = true; try { v.pause(); } catch (e) {} v.removeAttribute('src'); v.load(); v.remove(); }
 
 /* Joue une video. L'ancienne reste affichée jusqu'à ce que la nouvelle tourne (pas de flash noir).
    done = appelé à la fin (videos sans loop). Si le fichier manque : placeholder temporisé. */
 function playClip(v, label, done) {
   let finished = false;
   const fail = () => {
-    if (finished) return; finished = true;
+    if (finished || v._dead) return; finished = true;
     if (current) current.classList.remove('show');
-    ph.textContent = 'VIDEO MANQUANTE\n' + label; ph.classList.add('on');
+    const url = v.currentSrc || v.src;
+    ph.textContent = 'VIDEO NON LUE\n' + label + '\n' + url;
+    ph.classList.add('on');
+    // Diagnostic : le fichier existe-t-il à cette adresse ?
+    fetch(url, { method: 'HEAD' }).then(r => {
+      ph.textContent += r.ok
+        ? '\n\nFichier présent (HTTP ' + r.status + ') : codec non supporté ou chargement trop long'
+        : '\n\nFichier INTROUVABLE (HTTP ' + r.status + ') : nom, majuscules ou dossier ?';
+    }).catch(() => { ph.textContent += '\n\nTest impossible (ouvre l\'app en http, pas en fichier local)'; });
     if (done) setTimeout(done, CONFIG.PLACEHOLDER_STEP_MS);
   };
   if (v.error) return fail();
@@ -158,11 +166,11 @@ function playClip(v, label, done) {
     if (current && current !== v) current.classList.remove('show');
     current = v;
   }, { once: true });
-  v.addEventListener('error', fail, { once: true });
+  v.addEventListener('error', () => fail(), { once: true });
   if (done) v.addEventListener('ended', () => { if (!finished) { finished = true; done(); } }, { once: true });
   try { v.currentTime = 0; } catch (e) {}
   const p = v.play(); if (p && p.catch) p.catch(() => {});
-  setTimeout(() => { if (!v.classList.contains('show') && !finished) fail(); }, 4000);  // chargement trop long
+  setTimeout(() => { if (!v.classList.contains('show') && !finished) fail(); }, 12000);  // chargement trop long
 }
 
 /* =====================================================================
@@ -284,7 +292,11 @@ Object.values(STEP_PLAN).forEach(p => p.forEach((prefix, i) => {
   warm.add(CONFIG.CLIP_DIR + prefix + '_STEP_' + (i + 1) + '.mp4');
   warm.add(CONFIG.CLIP_DIR + prefix + '_STEP_' + (i + 1) + '_LOOP.mp4');
 }));
-warm.forEach(u => fetch(u).catch(() => {}));
+// Téléchargement un par un, après 5 s, pour ne pas ralentir les premières vidéos
+(async () => {
+  await new Promise(r => setTimeout(r, 5000));
+  for (const u of warm) { try { const r = await fetch(u); if (r.ok) await r.blob(); } catch (e) {} }
+})();
 
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('contextmenu', e => e.preventDefault());
