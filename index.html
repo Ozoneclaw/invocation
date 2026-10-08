@@ -43,6 +43,11 @@ html, body { margin:0; height:100%; background:#000; color:#e9dfff;
 #replay.on { display:block; }
 #replay:disabled { opacity:.45; border-color:#8a8a8a; box-shadow:none; text-shadow:none; }
 #replay:active:not(:disabled) { background:#7d0d0d; border-color:#ff9a1a; color:#fff; }
+/* Mode image : actif automatiquement si assets/bouton.png existe */
+#replay.img { width:min(40vmin, 60vw); padding:0; border:0; border-radius:0; box-shadow:none; text-shadow:none;
+    color:transparent; font-size:0; background:transparent center / contain no-repeat; }
+#replay.img:disabled { opacity:.4; }
+#replay.img:active:not(:disabled) { background-color:transparent; filter:brightness(1.4); }
 
 /* ============ ADMIN CACHE ============ */
 #hotspot { position:fixed; top:0; right:0; width:110px; height:110px; z-index:50; }
@@ -85,8 +90,9 @@ const CONFIG = {
   IDLE_RESET_MS: 30000,                       // retour a l'attente si abandon en cours de route
   PLACEHOLDER_STEP_MS: 1500,                  // duree d'un step "fantome" quand la video manque
   PRELOAD_IN_MEMORY: true,                    // charge chaque video en mémoire avant lecture (évite les saccades)
+  REPLAY_IMG: 'assets/bouton.png',            // image du bouton REJOUER (optionnelle, remplace le style CSS)
   SOUND: false,                               // true = joue le son des steps (a tester sur l'iPad)
-  FORCE_RARITY: 'common'                      // TEST : force une rareté. Mettre null pour le vrai tirage
+  FORCE_RARITY: null                          // TEST : 'common', 'rare', 'epic', 'legendary' ou 'fail' force une rareté. null = vrai tirage
 };
 
 /* Raretes : weight = pourcentage (somme = 100) */
@@ -99,14 +105,13 @@ const RARITIES = [
 ];
 
 /* Prefixe de fichier utilise a chaque clic, selon la rareté tirée.
-   Fichiers lus : <PREFIXE>_STEP_<n>.mp4 puis <PREFIXE>_STEP_<n>_LOOP.mp4
-   Seul DEMON_MINEUR est confirmé. Les autres prefixes sont à confirmer. */
+   Fichiers lus dans assets/clips/ : <PREFIXE>_STEP_<n>.mp4 puis <PREFIXE>_STEP_<n>_LOOP.mp4 */
 const STEP_PLAN = {
   common:    ['DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR'],
   rare:      ['DEMON_MINEUR','DEMON_MAJEUR','DEMON_MAJEUR','DEMON_MAJEUR','DEMON_MAJEUR'],
-  epic:      ['DEMON_MINEUR','DEMON_MAJEUR','ARCHI_DEMON','ARCHI_DEMON','ARCHI_DEMON'],
-  legendary: ['DEMON_MINEUR','DEMON_MAJEUR','ARCHI_DEMON','DEMON_ANCIEN','DEMON_ANCIEN'],
-  fail:      ['DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','FLOP']
+  epic:      ['DEMON_MINEUR','DEMON_MAJEUR','ARCHIDEMON','ARCHIDEMON','ARCHIDEMON'],
+  legendary: ['DEMON_MINEUR','DEMON_MAJEUR','ARCHIDEMON','DEMON_ANCIEN','DEMON_ANCIEN'],
+  fail:      ['DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_FLOPESQUE']
 };
 
 /* =====================================================================
@@ -323,7 +328,7 @@ $('adminReset').addEventListener('click', e => {
    DEMARRAGE
    ===================================================================== */
 // Précharge tout une fois (remplit aussi le cache hors-ligne du service worker)
-const warm = new Set([CONFIG.WAITING_VIDEO]);
+const warm = new Set([CONFIG.WAITING_VIDEO, CONFIG.REPLAY_IMG]);
 Object.values(STEP_PLAN).forEach(p => p.forEach((prefix, i) => {
   warm.add(CONFIG.CLIP_DIR + prefix + '_STEP_' + (i + 1) + '.mp4');
   warm.add(CONFIG.CLIP_DIR + prefix + '_STEP_' + (i + 1) + '_LOOP.mp4');
@@ -339,6 +344,16 @@ document.addEventListener('contextmenu', e => e.preventDefault());
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
+// Bouton personnalisé : si assets/bouton.png existe, il remplace le style CSS
+(function () {
+  const im = new Image();
+  im.onload = () => {
+    replayBtn.style.backgroundImage = 'url("' + CONFIG.REPLAY_IMG + '")';
+    replayBtn.style.aspectRatio = im.naturalWidth + ' / ' + im.naturalHeight;
+    replayBtn.classList.add('img');
+  };
+  im.src = CONFIG.REPLAY_IMG;
+})();
 resetGame();
 </script>
 </body>
