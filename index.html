@@ -90,7 +90,8 @@ const CONFIG = {
   IDLE_RESET_MS: 30000,                       // retour a l'attente si abandon en cours de route
   PLACEHOLDER_STEP_MS: 1500,                  // duree d'un step "fantome" quand la video manque
   PRELOAD_IN_MEMORY: true,                    // charge chaque video en mémoire avant lecture (évite les saccades)
-  REPLAY_IMG: 'assets/bouton.png',            // image du bouton REJOUER (optionnelle, remplace le style CSS)
+  REPLAY_IMGS: ['assets/button.png', 'assets/bouton.png'],  // image du bouton REJOUER (le premier fichier trouvé est utilisé)
+  SHOW_ERRORS: true,                          // true = affiche un message si une video échoue (test). false pour l'événement
   SOUND: false,                               // true = joue le son des steps (a tester sur l'iPad)
   FORCE_RARITY: null                          // TEST : 'common', 'rare', 'epic', 'legendary' ou 'fail' force une rareté. null = vrai tirage
 };
@@ -174,44 +175,63 @@ function loadSrc(v, url) {
 /* Joue une video. L'ancienne reste affichée jusqu'à ce que la nouvelle tourne (pas de flash noir).
    done = appelé à la fin (videos sans loop). Si le fichier manque : placeholder temporisé. */
 function playClip(v, label, done, valid) {
-  let finished = false;
-  const fail = () => {
-    if (finished || v._dead) return; finished = true;
+  let finished = false, shown = false, wd = null;
+
+  const watch = () => { if (!shown && !finished) fail('délai de chargement dépassé'); };
+
+  const fail = why => {
+    if (finished || v._dead) return;
+    // 1er échec avec une video en mémoire : on retente avec l'adresse directe du fichier
+    if (!v._retried && v._blobUrl) {
+      v._retried = true; clearTimeout(wd);
+      URL.revokeObjectURL(v._blobUrl); v._blobUrl = null;
+      v.src = v._origUrl; v.load();
+      wd = setTimeout(watch, 12000);
+      start();
+      return;
+    }
+    finished = true; clearTimeout(wd);
+    if (!CONFIG.SHOW_ERRORS) {                      // mode événement : on garde la dernière image, on avance
+      if (done) setTimeout(done, CONFIG.PLACEHOLDER_STEP_MS);
+      return;
+    }
     if (current) current.classList.remove('show');
-    const url = v.currentSrc || v.src;
-    ph.textContent = 'VIDEO NON LUE\n' + label + '\n' + url;
+    const code = v.error ? ' (code ' + v.error.code + ')' : '';
+    const url = v._origUrl || v.currentSrc || v.src;
+    ph.textContent = 'VIDEO NON LUE\n' + label + '\n' + url + '\n' + (why || 'erreur de lecture') + code;
     ph.classList.add('on');
-    // Diagnostic : le fichier existe-t-il à cette adresse ?
-    fetch(CONFIG.CLIP_DIR && v._origUrl ? v._origUrl : url, { method: 'HEAD' }).then(r => {
-      ph.textContent += r.ok
-        ? '\n\nFichier présent (HTTP ' + r.status + ') : codec non supporté ou chargement trop long'
-        : '\n\nFichier INTROUVABLE (HTTP ' + r.status + ') : nom, majuscules ou dossier ?';
+    fetch(url, { method: 'HEAD' }).then(r => {
+      ph.textContent += r.ok ? '\n\nFichier présent (HTTP ' + r.status + ')'
+                             : '\n\nFichier INTROUVABLE (HTTP ' + r.status + ') : nom, majuscules ou dossier ?';
     }).catch(() => { ph.textContent += '\n\nTest impossible (ouvre l\'app en http, pas en fichier local)'; });
     if (done) setTimeout(done, CONFIG.PLACEHOLDER_STEP_MS);
   };
+
   const start = () => {
     if (v._dead || finished) return;
-    if (v.error) return fail();
-    // Affiche cette video et masque la precedente. Declenché par l'évènement 'playing' OU par la
-    // résolution de play() : sur iPad, 'playing' ne se déclenche pas toujours sur une video déjà lancée.
+    if (v.error) return fail('erreur de lecture');
+    // Affiche cette video et masque la précédente. Déclenché par 'playing' OU par la résolution de play() :
+    // sur iPad, 'playing' ne se déclenche pas toujours sur une video déjà lancée.
     let revealed = false;
     const reveal = () => {
-      if (revealed || v._dead) return; revealed = true;
+      if (revealed || v._dead || finished) return; revealed = true;
       // valid() faux = un autre step a déjà démarré entre-temps : on n'affiche pas cette video
-      if (valid && !valid()) { finished = true; v.pause(); return; }
+      if (valid && !valid()) { finished = true; clearTimeout(wd); v.pause(); return; }
+      shown = true; clearTimeout(wd);
       ph.classList.remove('on'); v.classList.add('show');
       const prev = current;
       if (prev && prev !== v) { prev.classList.remove('show'); try { prev.pause(); } catch (e) {} }
       current = v;
     };
     v.addEventListener('playing', reveal, { once: true });
-    v.addEventListener('error', () => fail(), { once: true });
-    if (done) v.addEventListener('ended', () => { if (!finished) { finished = true; done(); } }, { once: true });
+    v.addEventListener('error', () => fail('erreur de lecture'), { once: true });
+    if (done) v.addEventListener('ended', () => { if (!finished) { finished = true; clearTimeout(wd); done(); } }, { once: true });
     try { v.pause(); v.currentTime = 0; } catch (e) {}   // pause d'abord : garantit un vrai redémarrage
     const p = v.play(); if (p && p.then) p.then(reveal, () => {});
   };
+
+  wd = setTimeout(watch, 12000);
   (v._ready || Promise.resolve()).then(start);
-  setTimeout(() => { if (!v.classList.contains('show') && !finished) fail(); }, 12000);  // chargement trop long
 }
 
 /* =====================================================================
@@ -249,7 +269,7 @@ function resetGame() {
   lit = 0; phase = 'wait';
   replayBtn.classList.remove('on');
   pick = drawRarity(); plan = STEP_PLAN[pick.id];
-  clip(1, false); clip(1, true);                       // préchargement du step 1
+  for (let i = 1; i <= CONFIG.TOTAL_STEPS; i++) { clip(i, false); clip(i, true); }   // précharge tout le tirage pendant l'attente
   playClip(waitVid, 'ECRAN D\'ATTENTE\n' + CONFIG.WAITING_VIDEO + '\n\nTouche pour commencer', null, () => phase === 'wait');
 }
 
@@ -328,7 +348,7 @@ $('adminReset').addEventListener('click', e => {
    DEMARRAGE
    ===================================================================== */
 // Précharge tout une fois (remplit aussi le cache hors-ligne du service worker)
-const warm = new Set([CONFIG.WAITING_VIDEO, CONFIG.REPLAY_IMG]);
+const warm = new Set([CONFIG.WAITING_VIDEO].concat(CONFIG.REPLAY_IMGS));
 Object.values(STEP_PLAN).forEach(p => p.forEach((prefix, i) => {
   warm.add(CONFIG.CLIP_DIR + prefix + '_STEP_' + (i + 1) + '.mp4');
   warm.add(CONFIG.CLIP_DIR + prefix + '_STEP_' + (i + 1) + '_LOOP.mp4');
@@ -344,16 +364,18 @@ document.addEventListener('contextmenu', e => e.preventDefault());
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
-// Bouton personnalisé : si assets/bouton.png existe, il remplace le style CSS
-(function () {
+// Bouton personnalisé : le premier fichier trouvé dans CONFIG.REPLAY_IMGS remplace le style CSS
+(function tryImg(i) {
+  if (i >= CONFIG.REPLAY_IMGS.length) return;
   const im = new Image();
   im.onload = () => {
-    replayBtn.style.backgroundImage = 'url("' + CONFIG.REPLAY_IMG + '")';
+    replayBtn.style.backgroundImage = 'url("' + CONFIG.REPLAY_IMGS[i] + '")';
     replayBtn.style.aspectRatio = im.naturalWidth + ' / ' + im.naturalHeight;
     replayBtn.classList.add('img');
   };
-  im.src = CONFIG.REPLAY_IMG;
-})();
+  im.onerror = () => tryImg(i + 1);
+  im.src = CONFIG.REPLAY_IMGS[i];
+})(0);
 resetGame();
 </script>
 </body>
