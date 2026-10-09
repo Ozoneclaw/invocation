@@ -35,7 +35,7 @@ html, body { margin:0; height:100%; background:#000; color:#e9dfff;
 #replay { position:absolute; z-index:10; left:50%; bottom:4vmin; transform:translateX(-50%);
     display:none; cursor:pointer;
     font-family:'Invocation', ui-monospace, 'SF Mono', Menlo, 'Courier New', monospace;
-    font-size:3.4vmin; font-weight:700; letter-spacing:.3em; text-transform:uppercase; padding:1.8vmin 6vmin;
+    font-size:1.7vmin; font-weight:700; letter-spacing:.3em; text-transform:uppercase; padding:.9vmin 3vmin;
     color:#f2f2f2; background:rgba(0,0,0,.82);
     border:.45vmin solid #e8e8e8; border-radius:255px 18px 225px 18px / 18px 225px 18px 255px;
     text-shadow:0 0 1.2vmin #d11;
@@ -45,8 +45,9 @@ html, body { margin:0; height:100%; background:#000; color:#e9dfff;
 #replay:active:not(:disabled) { background:#7d0d0d; border-color:#ff9a1a; color:#fff; }
 /* Mode image : actif automatiquement si assets/button.png est chargée */
 #replayImg { display:none; width:100%; height:auto; pointer-events:none; -webkit-user-drag:none; }
-#replay.img { width:min(40vmin, 60vw); padding:0; border:0; border-radius:0; background:none;
+#replay.img { width:min(20vmin, 30vw); padding:0; border:0; border-radius:0; background:none;
     box-shadow:none; text-shadow:none; }
+#replay.img::after { content:''; position:absolute; inset:-14px; }   /* zone de toucher élargie pour le petit bouton */
 #replay.img #replayTxt { display:none; }
 #replay.img #replayImg { display:block; }
 #replay.img:disabled { opacity:.4; }
@@ -115,7 +116,7 @@ const STEP_PLAN = {
   rare:      ['DEMON_MINEUR','DEMON_MAJEUR','DEMON_MAJEUR','DEMON_MAJEUR','DEMON_MAJEUR'],
   epic:      ['DEMON_MINEUR','DEMON_MAJEUR','ARCHIDEMON','ARCHIDEMON','ARCHIDEMON'],
   legendary: ['DEMON_MINEUR','DEMON_MAJEUR','ARCHIDEMON','DEMON_ANCIEN','DEMON_ANCIEN'],
-  fail:      ['DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_MINEUR','DEMON_FLOPESQUE']
+  fail:      ['DEMON_MINEUR','DEMON_MAJEUR','ARCHIDEMON','DEMON_ANCIEN','DEMON_FLOPESQUE']   // monte comme un légendaire, puis flop au step 5
 };
 
 /* =====================================================================
